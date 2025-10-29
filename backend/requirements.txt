@@ -1,0 +1,15 @@
+# Python 3.13 호환 버전
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+opencv-python-headless==4.10.0.84
+numpy>=1.26.0
+librosa==0.10.2
+soundfile==0.12.1
+ffmpeg-python==0.2.0
+
+# URL 영상 다운로드
+yt-dlp>=2023.12.30
+
+# PyTorch는 별도 설치 (아래 명령어 사용)
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
