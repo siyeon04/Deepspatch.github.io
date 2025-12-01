@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>비디오 업로드 - Deepspatch</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(10px);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin-bottom: 3rem;
+            border: 1px solid #334155;
+        }
+        .logo { display: flex; align-items: center; gap: 1rem; }
+        .logo-icon { font-size: 2rem; }
+        .logo h1 { font-size: 2rem; font-weight: bold; }
+        .page-title { text-align: center; margin-bottom: 3rem; }
+        .page-title h2 { font-size: 2.5rem; margin-bottom: 0.5rem; }
+        .upload-toggle {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin-bottom: 3rem;
+        }
+        .toggle-btn {
+            padding: 1rem 2rem;
+            font-size: 1.125rem;
+            font-weight: 600;
+            border: 2px solid #334155;
+            background-color: transparent;
+            color: #94a3b8;
+            border-radius: 9999px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .toggle-btn:hover { border-color: #2563eb; color: #60a5fa; }
+        .toggle-btn.active { background-color: #2563eb; color: white; border-color: #2563eb; }
+        .upload-section {
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 1rem;
+            padding: 3rem;
+            margin-bottom: 2rem;
+        }
+        .hidden { display: none !important; }
+        .drop-zone {
+            border: 3px dashed #475569;
+            border-radius: 1rem;
+            padding: 4rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background-color: #0f172a;
+        }
+        .drop-zone:hover { border-color: #2563eb; background-color: rgba(37, 99, 235, 0.1); }
+        .drop-zone-icon { font-size: 4rem; margin-bottom: 1rem; }
+        .drop-zone h3 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .drop-zone p { color: #94a3b8; margin-bottom: 1rem; }
+        .file-input { display: none; }
+        .upload-check {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+            color: #10b981;
+            font-size: 1.125rem;
+        }
+        .url-input-group { margin-bottom: 2rem; }
+        .url-input-group label {
+            display: block;
+            font-size: 1.125rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        .url-input-group input {
+            width: 100%;
+            padding: 1rem 1.5rem;
+            font-size: 1.125rem;
+            background-color: #0f172a;
+            border: 2px solid #334155;
+            border-radius: 0.5rem;
+            color: white;
+        }
+        .analyze-button { text-align: center; margin-top: 3rem; }
+        .analyze-btn {
+            padding: 1.25rem 3rem;
+            font-size: 1.25rem;
+            font-weight: bold;
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            color: white;
+            border: none;
+            border-radius: 9999px;
+            cursor: pointer;
+            box-shadow: 0 10px 30px rgba(37, 99, 235, 0.3);
+        }
+        .processing-section {
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 1rem;
+            padding: 3rem;
+            text-align: center;
+        }
+        .processing-title { font-size: 2rem; margin-bottom: 3rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="logo">
+                <div class="logo-icon">⚡</div>
+                <h1>Deepspatch</h1>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <div class="page-title">
+                <h2>비디오 업로드</h2>
+                <p>파일을 업로드하여 분석을 시작하세요</p>
+            </div>
+
+            <div class="upload-toggle" id="uploadToggle">
+                <button class="toggle-btn active" data-method="file">파일 업로드</button>
+                <button class="toggle-btn" data-method="url">URL 업로드</button>
+            </div>
+
+            <div class="upload-section" id="fileUploadSection">
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-icon">📹</div>
+                    <h3>비디오 업로드</h3>
+                    <p>드래그 앤 드롭 또는 클릭하여 업로드</p>
+                    <p>MP4, AVI, MOV (최대 200MB)</p>
+                    <input type="file" id="videoFile" class="file-input" accept="video/*">
+                </div>
+                <div class="upload-check" id="uploadCheck">
+                    <span>✓</span>
+                    <span id="uploadText">파일 선택됨</span>
+                </div>
+            </div>
+
+            <div class="upload-section hidden" id="urlUploadSection">
+                <div class="url-input-group">
+                    <label for="videoUrl">비디오 URL</label>
+                    <input type="text" id="videoUrl" placeholder="https://example.com/video.mp4">
+                </div>
+            </div>
+
+            <div class="analyze-button hidden" id="analyzeButton">
+                <button class="analyze-btn" id="startAnalysis">▶ 분석 시작하기</button>
+            </div>
+
+            <div class="processing-section hidden" id="processingSection">
+                <h2 class="processing-title">분석 진행 중...</h2>
+                <p>백엔드에서 처리 중입니다. 잠시만 기다려주세요.</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        console.log('✅ 스크립트 로드 시작');
+        
+        // DOM Elements
+        const uploadToggle = document.getElementById('uploadToggle');
+        const fileUploadSection = document.getElementById('fileUploadSection');
+        const urlUploadSection = document.getElementById('urlUploadSection');
+        const dropZone = document.getElementById('dropZone');
+        const videoFile = document.getElementById('videoFile');
+        const videoUrl = document.getElementById('videoUrl');
+        const uploadText = document.getElementById('uploadText');
+        const uploadCheck = document.getElementById('uploadCheck');
+        const analyzeButton = document.getElementById('analyzeButton');
+        const startAnalysis = document.getElementById('startAnalysis');
+        const processingSection = document.getElementById('processingSection');
+
+        let currentMethod = 'file';
+        let selectedFile = null;
+
+        console.log('✅ DOM 요소 로드 완료');
+
+        // Upload Method Toggle
+        uploadToggle.addEventListener('click', (e) => {
+            if (e.target.classList.contains('toggle-btn')) {
+                document.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
+                e.target.classList.add('active');
+                currentMethod = e.target.dataset.method;
+                
+                if (currentMethod === 'file') {
+                    fileUploadSection.classList.remove('hidden');
+                    urlUploadSection.classList.add('hidden');
+                } else {
+                    fileUploadSection.classList.add('hidden');
+                    urlUploadSection.classList.remove('hidden');
+                }
+                analyzeButton.classList.add('hidden');
+            }
+        });
+
+        // File Upload
+        dropZone.addEventListener('click', () => videoFile.click());
+        
+        videoFile.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                selectedFile = e.target.files[0];
+                uploadText.textContent = selectedFile.name;
+                uploadCheck.style.display = 'flex';
+                analyzeButton.classList.remove('hidden');
+                console.log('📁 파일 선택:', selectedFile.name);
+            }
+        });
+
+        // URL Input
+        videoUrl.addEventListener('input', (e) => {
+            if (e.target.value.trim()) {
+                analyzeButton.classList.remove('hidden');
+            } else {
+                analyzeButton.classList.add('hidden');
+            }
+        });
+
+        // ========== 백엔드 API 함수 (수정됨) ==========
+        async function analyzeVideo(file) {
+            console.log('🔄 analyzeVideo 함수 호출');
+            console.log('   파일:', file.name, '크기:', (file.size/1024/1024).toFixed(2), 'MB');
+            
+            const formData = new FormData();
+            formData.append('video', file);  // ✅ 'video' 필드로 파일 보내기
+            
+            console.log('📡 백엔드로 전송 중...');
+            const response = await fetch('http://localhost:5000/api/analyze', {
+                method: 'POST',
+                body: formData
+            });
+            
+            console.log('📥 응답 상태:', response.status);
+            if (!response.ok) throw new Error('분석 실패: ' + response.status);
+            
+            const data = await response.json();
+            console.log('✅ 분석 완료:', data);
+            return data;
+        }
+
+        async function analyzeVideoUrl(url) {
+            console.log('🔄 analyzeVideoUrl 함수 호출');
+            console.log('   URL:', url);
+            
+            const formData = new FormData();
+            formData.append('video_url', url);  // ✅ FormData + video_url
+            
+            const response = await fetch('http://localhost:5000/api/analyze-url', {
+                method: 'POST',
+                body: formData  // ✅ FormData로 보내기
+            });
+            
+            console.log('📥 응답 상태:', response.status);
+            if (!response.ok) throw new Error('분석 실패: ' + response.status);
+            
+            const data = await response.json();
+            console.log('✅ 분석 완료:', data);
+            return data;
+        }
+
+        console.log('✅ API 함수 정의 완료');
+        console.log('   typeof analyzeVideo:', typeof analyzeVideo);
+
+        // Start Analysis
+        startAnalysis.addEventListener('click', async () => {
+            console.log('🚀 분석 시작 버튼 클릭');
+            
+            fileUploadSection.classList.add('hidden');
+            urlUploadSection.classList.add('hidden');
+            analyzeButton.classList.add('hidden');
+            uploadToggle.style.display = 'none';
+            processingSection.classList.remove('hidden');
+            
+            try {
+                let result;
+                
+                if (currentMethod === 'file' && selectedFile) {
+                    console.log('📤 파일 업로드 시작');
+                    result = await analyzeVideo(selectedFile);
+                } else if (currentMethod === 'url' && videoUrl.value.trim()) {
+                    console.log('📤 URL 업로드 시작');
+                    result = await analyzeVideoUrl(videoUrl.value.trim());
+                } else {
+                    throw new Error('파일 또는 URL을 선택해주세요');
+                }
+                
+                sessionStorage.setItem('analysisResult', JSON.stringify(result));
+                console.log('📊 대시보드로 이동');
+                window.location.href = 'dashboard.html';
+                
+            } catch (error) {
+                console.error('❌ 에러:', error);
+                alert('분석 중 오류: ' + error.message);
+                window.location.reload();
+            }
+        });
+
+        console.log('✅ 모든 이벤트 리스너 등록 완료');
+    </script>
+</body>
+</html>

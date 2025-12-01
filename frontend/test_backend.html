@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>백엔드 테스트</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h2 { color: #333; }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover { background: #1d4ed8; }
+        input[type="file"] {
+            display: block;
+            margin: 20px 0;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            display: none;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .log {
+            margin: 10px 0;
+            padding: 10px;
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 백엔드 연결 테스트</h1>
+
+    <div class="test-box">
+        <h2>1단계: 백엔드 상태 확인</h2>
+        <button onclick="testBackend()">백엔드 연결 테스트</button>
+        <div id="status"></div>
+    </div>
+
+    <div class="test-box">
+        <h2>2단계: 비디오 업로드 테스트</h2>
+        <input type="file" id="videoFile" accept="video/*">
+        <button onclick="uploadVideo()">비디오 분석 요청</button>
+        <div id="result"></div>
+    </div>
+
+    <div class="test-box">
+        <h2>📋 로그</h2>
+        <div id="logs"></div>
+    </div>
+
+    <script>
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const time = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.className = 'log';
+            div.textContent = `[${time}] ${message}`;
+            if (type === 'error') div.style.background = '#ffebee';
+            if (type === 'success') div.style.background = '#e8f5e9';
+            logs.insertBefore(div, logs.firstChild);
+            console.log(message);
+        }
+
+        async function testBackend() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = '<p>테스트 중...</p>';
+            log('백엔드 연결 테스트 시작...');
+
+            try {
+                // 1. 메인 페이지 확인
+                log('1. GET / 요청...');
+                const response1 = await fetch('http://localhost:5000/');
+                log(`   응답: ${response1.status} ${response1.statusText}`, response1.ok ? 'success' : 'error');
+
+                // 2. API 문서 확인
+                log('2. GET /docs 확인...');
+                const response2 = await fetch('http://localhost:5000/docs');
+                log(`   응답: ${response2.status} ${response2.statusText}`, response2.ok ? 'success' : 'error');
+
+                // 3. Health check (있다면)
+                log('3. GET / 테스트...');
+                const response3 = await fetch('http://localhost:5000/');
+                log(`   응답: ${response3.status}`, response3.ok ? 'success' : 'error');
+
+                statusDiv.innerHTML = `
+                    <div class="success">
+                        <h3>✅ 백엔드 연결 성공!</h3>
+                        <p>메인 페이지: ${response1.status}</p>
+                        <p>API 문서: ${response2.status}</p>
+                    </div>
+                `;
+                log('✅ 백엔드 연결 성공!', 'success');
+
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <div class="error">
+                        <h3>❌ 백엔드 연결 실패</h3>
+                        <p>${error.message}</p>
+                        <p>백엔드가 실행 중인지 확인하세요!</p>
+                    </div>
+                `;
+                log(`❌ 에러: ${error.message}`, 'error');
+            }
+        }
+
+        async function uploadVideo() {
+            const fileInput = document.getElementById('videoFile');
+            const resultDiv = document.getElementById('result');
+            
+            if (!fileInput.files || fileInput.files.length === 0) {
+                alert('비디오 파일을 선택해주세요!');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            log(`📹 파일 선택: ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`);
+
+            resultDiv.style.display = 'block';
+            resultDiv.className = '';
+            resultDiv.innerHTML = '⏳ 분석 중... 잠시만 기다려주세요.';
+
+            const formData = new FormData();
+            formData.append('video', file);
+
+            log('📤 백엔드로 전송 시작...');
+            log(`   URL: http://localhost:5000/api/analyze`);
+            log(`   Method: POST`);
+            log(`   파일: ${file.name}`);
+
+            try {
+                const startTime = Date.now();
+                
+                const response = await fetch('http://localhost:5000/api/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                log(`📥 응답 수신 (${elapsed}초 소요)`);
+                log(`   상태: ${response.status} ${response.statusText}`);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+
+                const data = await response.json();
+                log('✅ 분석 완료!', 'success');
+                log(`   비디오 딥페이크: ${data.video_deepfake}%`);
+                log(`   오디오 딥페이크: ${data.audio_deepfake}%`);
+
+                resultDiv.className = 'success';
+                resultDiv.innerHTML = `
+                    <h3>✅ 분석 완료!</h3>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+
+            } catch (error) {
+                log(`❌ 에러 발생: ${error.message}`, 'error');
+                resultDiv.className = 'error';
+                resultDiv.innerHTML = `
+                    <h3>❌ 분석 실패</h3>
+                    <p>${error.message}</p>
+                    <p>콘솔(F12)에서 자세한 내용을 확인하세요.</p>
+                `;
+                console.error('Error details:', error);
+            }
+        }
+
+        // 페이지 로드 시 자동 테스트
+        window.addEventListener('load', () => {
+            log('페이지 로드 완료');
+            log('백엔드 URL: http://localhost:5000');
+            log('준비 완료!', 'success');
+        });
+    </script>
+</body>
+</html>

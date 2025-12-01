@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>백엔드 테스트 v2</title>
+    <style>
+        body {
+            font-family: Arial;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover { background: #1d4ed8; }
+        .box {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border: 2px solid #ddd;
+        }
+        #result {
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 5px;
+            margin-top: 20px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>🔧 백엔드 직접 테스트</h1>
+
+    <div class="box">
+        <h2>파일 업로드 테스트</h2>
+        <input type="file" id="videoFile" accept="video/*">
+        <button onclick="testUpload()">업로드 테스트</button>
+        <div id="result"></div>
+    </div>
+
+    <script>
+        console.log('=== 스크립트 로드 완료 ===');
+
+        async function testUpload() {
+            const fileInput = document.getElementById('videoFile');
+            const resultDiv = document.getElementById('result');
+            
+            console.log('=== testUpload 함수 실행 ===');
+            
+            if (!fileInput.files || fileInput.files.length === 0) {
+                alert('파일을 선택하세요!');
+                console.log('❌ 파일 없음');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            console.log('✅ 파일 선택:', file.name, file.size, 'bytes');
+
+            resultDiv.textContent = '⏳ 업로드 중...';
+            resultDiv.className = '';
+
+            const formData = new FormData();
+            formData.append('video', file);
+
+            console.log('📤 FormData 생성 완료');
+            console.log('🌐 요청 URL: http://localhost:5000/api/analyze');
+            console.log('📡 요청 시작...');
+
+            try {
+                const startTime = Date.now();
+                
+                const response = await fetch('http://localhost:5000/api/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                
+                console.log('📥 응답 수신:', response.status, response.statusText);
+                console.log('⏱️  소요 시간:', elapsed, '초');
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+
+                const data = await response.json();
+                
+                console.log('✅ JSON 파싱 성공');
+                console.log('📊 응답 데이터:', data);
+
+                resultDiv.className = 'success';
+                resultDiv.textContent = `✅ 성공!\n\n${JSON.stringify(data, null, 2)}`;
+
+            } catch (error) {
+                console.error('❌ 에러 발생:', error);
+                console.error('❌ 에러 상세:', error.message);
+                console.error('❌ 에러 스택:', error.stack);
+                
+                resultDiv.className = 'error';
+                resultDiv.textContent = `❌ 실패\n\n${error.message}`;
+            }
+        }
+
+        console.log('=== 함수 정의 완료 ===');
+        console.log('✅ testUpload:', typeof testUpload);
+    </script>
+</body>
+</html>

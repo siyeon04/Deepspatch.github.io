@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>분석 결과 - Deepspatch</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div>
+                    <h1>Deepspatch</h1>
+                </div>
+                <div class="header-subtitle">AI-Powered Detection</div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Dashboard -->
+    <main class="dashboard-page">
+        <div class="container">
+            <!-- Page Title -->
+            <div class="page-title">
+                <h2>분석 결과 대시보드</h2>
+                <p>XAI 기반 종합 분석 리포트</p>
+            </div>
+
+            <!-- Score Cards -->
+            <div class="score-cards">
+                <div class="score-card blue">
+                    <div class="score-card-icon">🎬</div>
+                    <div class="score-card-content">
+                        <h3>비디오 딥페이크</h3>
+                        <div class="score-card-value" id="videoScore">--</div>
+                        <p>Video Deepfake Score</p>
+                    </div>
+                </div>
+
+                <div class="score-card orange">
+                    <div class="score-card-icon">🎵</div>
+                    <div class="score-card-content">
+                        <h3>오디오 딥보이스</h3>
+                        <div class="score-card-value" id="audioScore">--</div>
+                        <p>Audio Deepvoice Score</p>
+                    </div>
+                </div>
+
+                <div class="score-card purple">
+                    <div class="score-card-icon">📊</div>
+                    <div class="score-card-content">
+                        <h3>종합 점수</h3>
+                        <div class="score-card-value" id="overallScore">--</div>
+                        <p>Overall Deepfake Score</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Timeline Graph -->
+            <div class="chart-section">
+                <div class="chart-header">
+                    <h3>⏰ 시간대별 딥페이크 의심도</h3>
+                    <p id="suspiciousTime">가장 의심스러운 시점: --초</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="timelineChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Facial Analysis -->
+            <div class="facial-analysis-section" id="facialSection">
+                <h3>👤 얼굴 부위별 분석</h3>
+                <p class="section-subtitle">가장 의심스러운 프레임의 부위별 이상 점수</p>
+                
+                <div class="facial-grid">
+                    <!-- Face Diagram -->
+                    <div class="face-diagram">
+                        <svg viewBox="0 0 200 260" class="face-svg">
+                            <!-- 얼굴 윤곽 -->
+                            <ellipse cx="100" cy="120" rx="80" ry="100" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+                            
+                            <!-- 왼쪽 눈 -->
+                            <ellipse cx="70" cy="100" rx="15" ry="10" fill="#334155" stroke="#60a5fa" stroke-width="2" class="facial-part" data-region="눈"/>
+                            <circle cx="70" cy="100" r="5" fill="#60a5fa"/>
+                            
+                            <!-- 오른쪽 눈 -->
+                            <ellipse cx="130" cy="100" rx="15" ry="10" fill="#334155" stroke="#60a5fa" stroke-width="2" class="facial-part" data-region="눈"/>
+                            <circle cx="130" cy="100" r="5" fill="#60a5fa"/>
+                            
+                            <!-- 코 -->
+                            <path d="M 100 120 L 95 140 L 100 145 L 105 140 Z" fill="#334155" stroke="#f97316" stroke-width="2" class="facial-part" data-region="코"/>
+                            
+                            <!-- 입 -->
+                            <ellipse cx="100" cy="170" rx="25" ry="12" fill="#334155" stroke="#a855f7" stroke-width="2" class="facial-part" data-region="입"/>
+                            
+                            <!-- 얼굴윤곽 마커 -->
+                            <circle cx="40" cy="120" r="3" fill="#10b981" class="facial-part" data-region="얼굴윤곽"/>
+                            <circle cx="160" cy="120" r="3" fill="#10b981" class="facial-part" data-region="얼굴윤곽"/>
+                            
+                            <!-- 화살표 및 레이블 위치 -->
+                            <g id="eyeArrow" class="arrow-group">
+                                <line x1="70" y1="85" x2="70" y2="60" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrowBlue)"/>
+                                <text x="75" y="50" fill="#60a5fa" font-size="12" font-weight="bold">눈</text>
+                                <text x="75" y="65" fill="#60a5fa" font-size="14" font-weight="bold" id="eyeScore">--%</text>
+                            </g>
+                            
+                            <g id="noseArrow" class="arrow-group">
+                                <line x1="110" y1="135" x2="140" y2="135" stroke="#f97316" stroke-width="2" marker-end="url(#arrowOrange)"/>
+                                <text x="145" y="135" fill="#f97316" font-size="12" font-weight="bold">코</text>
+                                <text x="145" y="150" fill="#f97316" font-size="14" font-weight="bold" id="noseScore">--%</text>
+                            </g>
+                            
+                            <g id="mouthArrow" class="arrow-group">
+                                <line x1="100" y1="185" x2="100" y2="210" stroke="#a855f7" stroke-width="2" marker-end="url(#arrowPurple)"/>
+                                <text x="105" y="215" fill="#a855f7" font-size="12" font-weight="bold">입</text>
+                                <text x="105" y="230" fill="#a855f7" font-size="14" font-weight="bold" id="mouthScore">--%</text>
+                            </g>
+                            
+                            <g id="contourArrow" class="arrow-group">
+                                <line x1="30" y1="120" x2="10" y2="120" stroke="#10b981" stroke-width="2" marker-end="url(#arrowGreen)"/>
+                                <text x="15" y="110" fill="#10b981" font-size="10" font-weight="bold">윤곽</text>
+                                <text x="15" y="125" fill="#10b981" font-size="12" font-weight="bold" id="contourScore">--%</text>
+                            </g>
+                            
+                            <!-- Arrow markers -->
+                            <defs>
+                                <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
+                                    <polygon points="0,0 10,5 0,10" fill="#60a5fa"/>
+                                </marker>
+                                <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
+                                    <polygon points="0,0 10,5 0,10" fill="#f97316"/>
+                                </marker>
+                                <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
+                                    <polygon points="0,0 10,5 0,10" fill="#a855f7"/>
+                                </marker>
+                                <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
+                                    <polygon points="0,0 10,5 0,10" fill="#10b981"/>
+                                </marker>
+                            </defs>
+                        </svg>
+                    </div>
+
+                    <!-- Region Details -->
+                    <div class="facial-details">
+                        <div class="facial-detail-item">
+                            <div class="detail-header">
+                                <div class="detail-icon blue">👁️</div>
+                                <h4>눈</h4>
+                            </div>
+                            <div class="detail-bar">
+                                <div class="detail-fill blue" id="eyeBar" style="width: 0%"></div>
+                            </div>
+                            <p class="detail-score" id="eyeDetail">--%</p>
+                        </div>
+
+                        <div class="facial-detail-item">
+                            <div class="detail-header">
+                                <div class="detail-icon orange">👃</div>
+                                <h4>코</h4>
+                            </div>
+                            <div class="detail-bar">
+                                <div class="detail-fill orange" id="noseBar" style="width: 0%"></div>
+                            </div>
+                            <p class="detail-score" id="noseDetail">--%</p>
+                        </div>
+
+                        <div class="facial-detail-item">
+                            <div class="detail-header">
+                                <div class="detail-icon purple">👄</div>
+                                <h4>입</h4>
+                            </div>
+                            <div class="detail-bar">
+                                <div class="detail-fill purple" id="mouthBar" style="width: 0%"></div>
+                            </div>
+                            <p class="detail-score" id="mouthDetail">--%</p>
+                        </div>
+
+                        <div class="facial-detail-item">
+                            <div class="detail-header">
+                                <div class="detail-icon green">⭕</div>
+                                <h4>얼굴 윤곽</h4>
+                            </div>
+                            <div class="detail-bar">
+                                <div class="detail-fill green" id="contourBar" style="width: 0%"></div>
+                            </div>
+                            <p class="detail-score" id="contourDetail">--%</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="action-buttons">
+                <button class="btn-primary" onclick="window.location.href='upload.html'">
+                    새로운 분석 시작
+                </button>
+                <button class="btn-secondary" onclick="window.location.href='index.html'">
+                    메인으로
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <p>© 2025 Deepspatch. AI-Powered Security System</p>
+        </div>
+    </footer>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
