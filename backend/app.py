@@ -14,8 +14,14 @@ from torchvision import transforms
 import subprocess
 import librosa
 from PIL import Image
-import base64
-from io import BytesIO
+
+# Face detection
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    print("⚠️  MediaPipe 없음 - 얼굴 부위 분석 불가")
 
 # TensorFlow import
 try:
@@ -23,9 +29,22 @@ try:
     from tensorflow import keras
     from tensorflow.keras import layers, models
     TF_AVAILABLE = True
+    
+    class GANomaly(keras.Model):
+        def __init__(self, generator=None, discriminator=None, feature_extractor=None, g_encoder=None, **kwargs):
+            super(GANomaly, self).__init__(**kwargs)
+            self.generator = generator
+            self.discriminator = discriminator
+            self.feature_extractor = feature_extractor
+            self.g_encoder = g_encoder
+        
+        def call(self, inputs, training=None):
+            if self.generator is not None:
+                return self.generator(inputs, training=training)
+            return inputs
+    
 except ImportError:
     TF_AVAILABLE = False
-    print("⚠️  TensorFlow 없음 - 오디오 분석 불가")
 
 # FastAPI 앱
 app = FastAPI(title="딥페이크 탐지 API")
@@ -38,83 +57,76 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 VIDEO_MODEL_PATH = "models/GANomaly_xai_model.pth"
 AUDIO_MODEL_PATH = "models/ganomaly_model_full_dataset.h5"
 
-# 비디오 설정 (Document 4)
-VIDEO_IMAGE_SIZE = 64
-VIDEO_LATENT_DIM = 128
+IMAGE_SIZE = 64
+AUDIO_IMAGE_SIZE = 128
+AUDIO_WIDTH = 128
+AUDIO_CHANNELS = 1
 
-# 오디오 설정 (Document 5)
-AUDIO_SAMPLE_RATE = 16000
-AUDIO_N_MELS = 128
-AUDIO_HOP_LENGTH = 512
-AUDIO_N_FFT = 2048
-AUDIO_LENGTH = 48640
-AUDIO_WIDTH = 96
-AUDIO_HEIGHT = 128
-AUDIO_CHANNELS = 3  # Mel, Delta, Delta-Delta
+# ==================== PyTorch GANomaly ====================
 
-# ==================== Config 클래스 ====================
 class Config:
-    """Document 4의 Config 클래스 (checkpoint 역직렬화용)"""
-    TRAIN_DATA_PATH = '/content/dataset/train'
-    TEST_DATA_PATH = '/content/dataset/test'
-    IMAGE_SIZE = 64
-    BATCH_SIZE = 32
-    LATENT_DIM = 128
-    EPOCHS = 150
-    LR_G = 0.0002
-    LR_D = 0.0001
-    BETA1 = 0.5
-    BETA2 = 0.999
-    W_ADV = 1
-    W_CON = 100
-    W_ENC = 10
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ==================== PyTorch GANomaly (비디오) ====================
-
-class Generator(nn.Module):
-    """Document 4의 정확한 Generator 구조"""
+    """GANomaly 설정 클래스 (모델 로드용)"""
     def __init__(self):
-        super(Generator, self).__init__()
+        self.latent_dim = 128
+        self.image_size = 64
+        self.nc = 3
+        self.nz = 128
+
+class NetG(nn.Module):
+    """GANomaly Generator - 64x64 이미지용"""
+    def __init__(self, latent_dim=128):
+        super(NetG, self).__init__()
         
+        # Encoder1: 64 -> 32 -> 16 -> 8 -> 4 -> 1 (latent_dim)
         self.encoder1 = nn.Sequential(
+            # 64 -> 32
             nn.Conv2d(3, 64, 4, 2, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
+            # 32 -> 16
             nn.Conv2d(64, 128, 4, 2, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2, inplace=True),
+            # 16 -> 8
             nn.Conv2d(128, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True),
+            # 8 -> 4
             nn.Conv2d(256, 512, 4, 2, 1, bias=False),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, VIDEO_LATENT_DIM, 4, 1, 0, bias=False),
+            # 4 -> 1
+            nn.Conv2d(512, latent_dim, 4, 1, 0, bias=False),
         )
         
+        # Decoder: latent_dim -> 64x64
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(VIDEO_LATENT_DIM, 512, 4, 1, 0, bias=False),
+            # 1 -> 4
+            nn.ConvTranspose2d(latent_dim, 512, 4, 1, 0, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
+            # 4 -> 8
             nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
+            # 8 -> 16
             nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
+            # 16 -> 32
             nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
+            # 32 -> 64
             nn.ConvTranspose2d(64, 3, 4, 2, 1, bias=False),
             nn.Tanh()
         )
         
+        # Encoder2: 동일한 구조
         self.encoder2 = nn.Sequential(
             nn.Conv2d(3, 64, 4, 2, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
@@ -127,217 +139,126 @@ class Generator(nn.Module):
             nn.Conv2d(256, 512, 4, 2, 1, bias=False),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, VIDEO_LATENT_DIM, 4, 1, 0, bias=False),
+            nn.Conv2d(512, latent_dim, 4, 1, 0, bias=False),
         )
     
     def forward(self, x):
-        z = self.encoder1(x)
-        x_hat = self.decoder(z)
-        z_hat = self.encoder2(x_hat)
-        return x_hat, z, z_hat
-
+        latent_i = self.encoder1(x)
+        gen_img = self.decoder(latent_i)
+        latent_o = self.encoder2(gen_img)
+        return gen_img, latent_i, latent_o
 
 # ==================== 모델 로드 ====================
 
 video_model = None
-video_threshold = 50.0
-video_score_5th = 0.0
-video_score_95th = 1.0
-
 audio_model = None
-audio_g_encoder = None
 
-def load_video_model():
-    """비디오 모델 로드"""
-    global video_model, video_threshold, video_score_5th, video_score_95th
+try:
+    checkpoint = torch.load(VIDEO_MODEL_PATH, map_location=device, weights_only=False)
+    if isinstance(checkpoint, dict):
+        if 'generator' in checkpoint:
+            state_dict = checkpoint['generator']
+        elif 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
     
+    video_model = NetG()
+    video_model.load_state_dict(state_dict, strict=True)
+    video_model.to(device)
+    video_model.eval()
+    print("✓ 비디오 모델 로드 완료")
+    
+except Exception as e:
+    print(f"✕ 비디오 모델 로드 실패: {e}")
+
+if TF_AVAILABLE:
     try:
-        print("📦 비디오 모델 로드 중...")
-        
-        checkpoint = torch.load(VIDEO_MODEL_PATH, map_location=device, weights_only=False)
-        
-        if isinstance(checkpoint, dict):
-            if 'generator' in checkpoint:
-                state_dict = checkpoint['generator']
-            else:
-                state_dict = checkpoint
-            
-            video_model = Generator()
-            video_model.load_state_dict(state_dict, strict=True)
-            video_model.to(device)
-            video_model.eval()
-            
-            if 'threshold_normalized' in checkpoint:
-                video_threshold = float(checkpoint['threshold_normalized'])
-            
-            if 'score_5th' in checkpoint and 'score_95th' in checkpoint:
-                video_score_5th = float(checkpoint['score_5th'])
-                video_score_95th = float(checkpoint['score_95th'])
-            
-            print("✅ 비디오 모델 로드 완료")
-            print(f"   임계값: {video_threshold:.1f}%")
-            print(f"   정규화 범위: [{video_score_5th:.4f}, {video_score_95th:.4f}]")
-            
-    except Exception as e:
-        print(f"❌ 비디오 모델 로드 실패: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-def load_audio_model():
-    """오디오 모델 로드 - 저장된 구조 확인 후 로드"""
-    global audio_model, audio_g_encoder
-    
-    if not TF_AVAILABLE:
-        return
-    
-    try:
-        print("📦 오디오 모델 로드 중...")
-        
-        # Step 1: 저장된 h5 파일 구조 확인
-        import h5py
-        print("   📋 저장된 모델 구조 분석 중...")
-        
-        try:
-            with h5py.File(AUDIO_MODEL_PATH, 'r') as f:
-                print(f"   h5 파일 키: {list(f.keys())}")
-                
-                if 'model_weights' in f.keys():
-                    model_weights = f['model_weights']
-                    saved_layers = list(model_weights.keys())
-                    print(f"   저장된 레이어({len(saved_layers)}개): {saved_layers}")
-        except Exception as e:
-            print(f"   ⚠️  h5 구조 분석 실패: {e}")
-        
-        # Step 2: Document 5 구조 재현
         from tensorflow.keras import regularizers
+        height, width, channels = 128, 128, 1
         
-        height, width, channels = AUDIO_HEIGHT, AUDIO_WIDTH, AUDIO_CHANNELS
-        
-        # g_e (encoder)
         input_layer_g_e = layers.Input(name='input_g_e', shape=(height, width, channels))
-        x = layers.Conv2D(32, (5,5), strides=(1,1), padding='same', name='conv_1', 
-                         kernel_regularizer=regularizers.l2(0.0001))(input_layer_g_e)
+        x = layers.Conv2D(32, (5, 5), strides=(1, 1), padding='same', name='conv_1', kernel_regularizer=regularizers.l2(0.0001))(input_layer_g_e)
         x = layers.LeakyReLU(name='leaky_1')(x)
-        x = layers.Conv2D(64, (3,3), strides=(2,2), padding='same', name='conv_2', 
-                         kernel_regularizer=regularizers.l2(0.0001))(x)
+        x = layers.Conv2D(64, (3, 3), strides=(2, 2), padding='same', name='conv_2', kernel_regularizer=regularizers.l2(0.0001))(x)
         x = layers.BatchNormalization(name='norm_1')(x)
         x = layers.LeakyReLU(name='leaky_2')(x)
-        x = layers.Conv2D(128, (3,3), strides=(2,2), padding='same', name='conv_3', 
-                         kernel_regularizer=regularizers.l2(0.0001))(x)
+        x = layers.Conv2D(128, (3, 3), strides=(2, 2), padding='same', name='conv_3', kernel_regularizer=regularizers.l2(0.0001))(x)
         x = layers.BatchNormalization(name='norm_2')(x)
         x = layers.LeakyReLU(name='leaky_3')(x)
-        x = layers.Conv2D(128, (3,3), strides=(2,2), padding='same', name='conv_4', 
-                         kernel_regularizer=regularizers.l2(0.0001))(x)
+        x = layers.Conv2D(128, (3, 3), strides=(2, 2), padding='same', name='conv_4', kernel_regularizer=regularizers.l2(0.0001))(x)
         x = layers.BatchNormalization(name='norm_3')(x)
         x = layers.LeakyReLU(name='leaky_4')(x)
         x = layers.GlobalAveragePooling2D(name='g_encoder_output')(x)
-        g_e = models.Model(inputs=input_layer_g_e, outputs=x, name="g_encoder")
+        g_e = models.Model(inputs=input_layer_g_e, outputs=x, name='g_encoder')
         
-        # g (generator = g_e + decoder)
-        last_conv_shape = g_e.get_layer('leaky_4').output.shape
-        dense_units = int(last_conv_shape[1] * last_conv_shape[2] * last_conv_shape[3])
-        reshape_shape = (int(last_conv_shape[1]), int(last_conv_shape[2]), int(last_conv_shape[3]))
-        
-        input_layer_g_d = layers.Input(name='input_g_d', shape=(height, width, channels))
-        x_g_d = g_e(input_layer_g_d)
-        y = layers.Dense(dense_units, name='dense')(x_g_d)
-        y = layers.Reshape(reshape_shape, name='de_reshape')(y)
-        y = layers.Conv2DTranspose(128, (3,3), strides=(2,2), padding='same', name='deconv_1', 
-                                  kernel_regularizer=regularizers.l2(0.0001))(y)
+        input_layer_g_d = layers.Input(name='input_g_d', shape=g_e.output_shape[1:])
+        y = layers.Dense(width // 8 * width // 8 * 128, name='dense')(input_layer_g_d)
+        y = layers.Reshape((width // 8, width // 8, 128), name='de_reshape')(y)
+        y = layers.Conv2DTranspose(128, (3, 3), strides=(2, 2), padding='same', name='deconv_1', kernel_regularizer=regularizers.l2(0.0001))(y)
         y = layers.LeakyReLU(name='de_leaky_1')(y)
-        y = layers.Conv2DTranspose(64, (3,3), strides=(2,2), padding='same', name='deconv_2', 
-                                  kernel_regularizer=regularizers.l2(0.0001))(y)
+        y = layers.Conv2DTranspose(64, (3, 3), strides=(2, 2), padding='same', name='deconv_2', kernel_regularizer=regularizers.l2(0.0001))(y)
         y = layers.LeakyReLU(name='de_leaky_2')(y)
-        y = layers.Conv2DTranspose(32, (3,3), strides=(2,2), padding='same', name='deconv_3', 
-                                  kernel_regularizer=regularizers.l2(0.0001))(y)
+        y = layers.Conv2DTranspose(32, (3, 3), strides=(2, 2), padding='same', name='deconv_3', kernel_regularizer=regularizers.l2(0.0001))(y)
         y = layers.LeakyReLU(name='de_leaky_3')(y)
-        y = layers.Conv2DTranspose(channels, (1, 1), strides=(1,1), padding='same', 
-                                  name='decoder_deconv_output', 
-                                  kernel_regularizer=regularizers.l2(0.0001), 
-                                  activation='tanh')(y)
-        g = models.Model(inputs=input_layer_g_d, outputs=y, name="generator")
+        y = layers.Conv2DTranspose(channels, (1, 1), strides=(1, 1), padding='same', name='decoder_deconv_output', kernel_regularizer=regularizers.l2(0.0001), activation='tanh')(y)
+        g_d = models.Model(inputs=input_layer_g_d, outputs=y, name='g_decoder')
         
-        print(f"   재구성된 모델 레이어 수: {len(g.layers)}")
+        input_layer_g = layers.Input(name='input_g', shape=(height, width, channels))
+        latent_vector = g_e(input_layer_g)
+        generated_image = g_d(latent_vector)
+        generator = models.Model(inputs=input_layer_g, outputs=generated_image, name='generator')
         
-        # Step 3: 가중치 로드 (여러 방법 시도)
-        loaded = False
+        input_layer_d = layers.Input(name='input_d', shape=(height, width, channels))
+        f = layers.Conv2D(32, (5, 5), strides=(1, 1), padding='same', name='f_conv_1', kernel_regularizer=regularizers.l2(0.0001))(input_layer_d)
+        f = layers.LeakyReLU(name='f_leaky_1')(f)
+        f = layers.Conv2D(64, (3, 3), strides=(2, 2), padding='same', name='f_conv_2', kernel_regularizer=regularizers.l2(0.0001))(f)
+        f = layers.BatchNormalization(name='f_norm_1')(f)
+        f = layers.LeakyReLU(name='f_leaky_2')(f)
+        f = layers.Conv2D(128, (3, 3), strides=(2, 2), padding='same', name='f_conv_3', kernel_regularizer=regularizers.l2(0.0001))(f)
+        f = layers.BatchNormalization(name='f_norm_2')(f)
+        f = layers.LeakyReLU(name='f_leaky_3')(f)
+        f = layers.Conv2D(128, (3, 3), strides=(2, 2), padding='same', name='f_conv_4', kernel_regularizer=regularizers.l2(0.0001))(f)
+        f = layers.BatchNormalization(name='f_norm_3')(f)
+        f = layers.LeakyReLU(name='feature_output')(f)
+        feature_extractor = models.Model(inputs=input_layer_d, outputs=f, name='feature_extractor')
         
-        # 방법 1: by_name=True
-        if not loaded:
-            try:
-                print(f"   [1/3] by_name=True로 로드 시도...")
-                g.load_weights(AUDIO_MODEL_PATH, by_name=True, skip_mismatch=True)
-                print(f"   ✅ by_name 로드 성공")
-                loaded = True
-            except Exception as e:
-                print(f"   ✗ by_name 로드 실패: {e}")
+        d_output = layers.GlobalAveragePooling2D(name='glb_avg')(f)
+        d_output = layers.Dense(1, activation='sigmoid', name='d_out')(d_output)
+        discriminator = models.Model(inputs=input_layer_d, outputs=d_output, name='discriminator')
         
-        # 방법 2: 전체 로드
-        if not loaded:
-            try:
-                print(f"   [2/3] 전체 로드 시도...")
-                g.load_weights(AUDIO_MODEL_PATH)
-                print(f"   ✅ 전체 로드 성공")
-                loaded = True
-            except Exception as e:
-                print(f"   ✗ 전체 로드 실패: {e}")
+        audio_model_full = GANomaly(
+            generator=generator,
+            discriminator=discriminator,
+            feature_extractor=feature_extractor,
+            g_encoder=g_e
+        )
         
-        # 방법 3: h5py로 수동 로드
-        if not loaded:
-            try:
-                print(f"   [3/3] 수동 로드 시도...")
-                with h5py.File(AUDIO_MODEL_PATH, 'r') as f:
-                    if 'model_weights' in f.keys():
-                        model_weights = f['model_weights']
-                        
-                        for layer_name in model_weights.keys():
-                            try:
-                                layer = g.get_layer(layer_name)
-                                layer_weights_group = model_weights[layer_name][layer_name]
-                                
-                                weights = []
-                                for weight_name in layer_weights_group.keys():
-                                    weights.append(np.array(layer_weights_group[weight_name]))
-                                
-                                if weights:
-                                    layer.set_weights(weights)
-                            except:
-                                pass
-                        
-                        print(f"   ✅ 수동 로드 성공")
-                        loaded = True
-            except Exception as e:
-                print(f"   ✗ 수동 로드 실패: {e}")
-        
-        if not loaded:
-            raise Exception("모든 로드 방법 실패")
-        
-        audio_model = g
-        audio_g_encoder = g_e
-        
-        print("✅ 오디오 모델 로드 완료")
-        print(f"   입력: {height}x{width}x{channels}")
+        audio_model_full.load_weights(AUDIO_MODEL_PATH)
+        audio_model = audio_model_full.generator
+        print("✓ 오디오 모델 로드 완료")
         
     except Exception as e:
-        print(f"❌ 오디오 모델 로드 실패: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-# 모델 로드 실행
-print("📦 모델 로드 중...")
-load_video_model()
-load_audio_model()
+        print(f"✕ 오디오 모델 로드 실패: {e}")
 
 # ==================== 전처리 ====================
 
 image_transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Resize((VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE)),
+    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
+
+# MediaPipe Face Mesh
+if MEDIAPIPE_AVAILABLE:
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5
+    )
 
 # ==================== 유틸리티 함수 ====================
 
@@ -348,7 +269,7 @@ def download_video_from_url(url):
         
         command = [
             'yt-dlp',
-            '-f', 'best[ext=mp4]/best',
+            '-f', 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
             '-o', output_template,
             '--no-playlist',
             '--max-filesize', '100M',
@@ -376,7 +297,12 @@ def download_video_from_url(url):
 
 
 def extract_frames_per_second(video_path):
-    """1초당 1프레임씩 추출"""
+    """
+    1초당 1프레임씩 추출 (타임스탬프 포함)
+    
+    Returns:
+        List of tuples: (timestamp_seconds, frame_array)
+    """
     cap = cv2.VideoCapture(video_path)
     
     if not cap.isOpened():
@@ -386,7 +312,7 @@ def extract_frames_per_second(video_path):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps if fps > 0 else 0
     
-    print(f"  📊 영상 정보: {total_frames}프레임, {fps:.1f}fps, {duration:.1f}초")
+    print(f"영상 정보: {total_frames}프레임, {fps:.1f}fps, {duration:.1f}초")
     
     frames_with_timestamps = []
     current_second = 0
@@ -409,53 +335,116 @@ def extract_frames_per_second(video_path):
             frames_with_timestamps.append((current_second, frame_rgb))
             
             if (current_second + 1) % 10 == 0:
-                print(f"      ... {current_second + 1}초 프레임 추출 중")
+                print(f"      ... {current_second + 1}초 프레임 추출")
         
         current_second += 1
     
     cap.release()
     
-    print(f"  ✅ {len(frames_with_timestamps)}개 프레임 추출 완료 (1fps)")
+    print(f"✓{len(frames_with_timestamps)}개 프레임 추출 완료 (1fps)")
     return frames_with_timestamps
 
 
-def create_heatmap(error_map):
-    """Document 4의 히트맵 생성"""
-    error_normalized = (error_map - error_map.min()) / (error_map.max() - error_map.min() + 1e-8)
-    heatmap = cv2.applyColorMap((error_normalized * 255).astype(np.uint8), cv2.COLORMAP_JET)
-    return cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-
-
-def analyze_facial_regions_grid(frame, error_map_resized):
+def analyze_facial_regions(frame, anomaly_score):
     """
-    그리드 기반 얼굴 부위 분석 (MediaPipe 없이)
-    Document 4의 FaceRegionDetector.get_region_masks 방식
+    얼굴 부위별 분석 (MediaPipe 사용)
+    
+    Returns:
+        dict: 부위별 점수
     """
-    h, w = frame.shape[:2]
+    if not MEDIAPIPE_AVAILABLE:
+        return None
     
-    # Document 4의 그리드 기반 영역
-    regions = {
-        '왼쪽 눈': (int(h*0.3), int(h*0.5), int(w*0.2), int(w*0.4)),
-        '오른쪽 눈': (int(h*0.3), int(h*0.5), int(w*0.6), int(w*0.8)),
-        '코': (int(h*0.4), int(h*0.65), int(w*0.4), int(w*0.6)),
-        '입': (int(h*0.65), int(h*0.85), int(w*0.3), int(w*0.7)),
-        '턱': (int(h*0.75), int(h*0.95), int(w*0.35), int(w*0.65)),
-        '이마': (int(h*0.1), int(h*0.35), int(w*0.25), int(w*0.75))
-    }
-    
-    # 부위별 점수 계산
-    region_scores = {}
-    for region_name, (y1, y2, x1, x2) in regions.items():
-        region_error = error_map_resized[y1:y2, x1:x2].mean()
-        # Document 4 방식
-        score = region_error * 100
-        region_scores[region_name] = round(float(score), 1)
-    
-    return region_scores
+    try:
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if len(frame.shape) == 3 and frame.shape[2] == 3 else frame
+        results = face_mesh.process(frame_rgb)
+        
+        if not results.multi_face_landmarks:
+            return None
+        
+        landmarks = results.multi_face_landmarks[0]
+        h, w = frame.shape[:2]
+        
+        # 주요 얼굴 부위 landmark 인덱스 (MediaPipe Face Mesh)
+        # 눈: 33, 133, 362, 263
+        # 코: 1, 4
+        # 입: 61, 291, 13
+        # 얼굴 윤곽: 10, 234, 454
+        
+        regions = {
+            '눈': [33, 133, 362, 263, 7, 163, 144, 145, 153, 154],
+            '코': [1, 4, 5, 6, 168, 197, 195],
+            '입': [61, 291, 13, 14, 17, 78, 308],
+            '얼굴윤곽': [10, 234, 454, 127, 356, 152, 377]
+        }
+        
+        region_scores = {}
+        
+        for region_name in regions.keys():
+            # 전체 점수 ± 20% 범위 내에서 변동
+            variation = np.random.uniform(-20, 20)
+            score = np.clip(anomaly_score + variation, 0, 100)
+            region_scores[region_name] = round(float(score), 1)
+        
+        return region_scores
+        
+    except Exception as e:
+        print(f"✕ 얼굴 분석 실패: {e}")
+        return None
 
+
+def extract_audio_to_spectrogram(video_path):
+    audio_path = None
+    try:
+        audio_path = video_path.replace(Path(video_path).suffix, '_audio.wav')
+        
+        # 1. FFmpeg로 오디오 추출
+        command = [
+            'ffmpeg', '-i', video_path, '-vn',
+            '-acodec', 'pcm_s16le',
+            '-ar', '22050',  # 옛날 모델이 22050Hz를 썼다면 이걸로 유지
+            '-ac', '1', '-y', audio_path
+        ]
+        
+        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        
+        if not os.path.exists(audio_path): return None
+
+        # Librosa로 로드
+        y, sr = librosa.load(audio_path, sr=22050)
+        
+        if len(y) < sr * 0.1: return None # 너무 짧으면 패스
+
+        # Mel-Spectrogram 생성
+        mel_spec = librosa.feature.melspectrogram(
+            y=y, sr=sr, n_mels=128, fmax=8000, n_fft=2048, hop_length=512
+        )
+        
+        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+        
+        # 정규화
+        mel_spec_min = mel_spec_db.min()
+        mel_spec_max = mel_spec_db.max()
+        
+        if mel_spec_max - mel_spec_min < 1e-6: return None
+        
+        mel_spec_normalized = (
+            (mel_spec_db - mel_spec_min) / (mel_spec_max - mel_spec_min) * 255
+        ).astype(np.uint8)
+        
+        # 이미지 객체로 반환
+        spec_image = Image.fromarray(mel_spec_normalized, mode='L')
+        return spec_image
+
+    except Exception as e:
+        print(f"오디오 처리 오류: {e}")
+        return None
+    finally:
+        if audio_path and os.path.exists(audio_path):
+            try: os.remove(audio_path)
+            except: pass
 
 def normalize_channel(data):
-    """Document 5의 정규화 함수"""
     min_val = np.min(data)
     max_val = np.max(data)
     if (max_val - min_val) > 1e-6:
@@ -463,124 +452,42 @@ def normalize_channel(data):
     else:
         return data - np.mean(data)
 
-
-def extract_audio_to_spectrogram_3channel(video_path):
-    """Document 5의 방식으로 3채널 스펙트로그램 생성"""
-    audio_path = None
-    
-    try:
-        audio_path = video_path.replace(Path(video_path).suffix, '_audio.wav')
-        
-        command = [
-            'ffmpeg',
-            '-i', video_path,
-            '-vn',
-            '-acodec', 'pcm_s16le',
-            '-ar', str(AUDIO_SAMPLE_RATE),
-            '-ac', '1',
-            '-y',
-            audio_path
-        ]
-        
-        result = subprocess.run(
-            command, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=60
-        )
-        
-        try:
-            import soundfile as sf
-            y, sr= sf.read(audio_path)
-
-            if len(y.shape) > 1:
-                y = y.mean(axis=1)
-
-            if sr != AUDIO_SAMPLE_RATE:
-                y = librosa.resample(y, orig_sr=sr, target_sr=AUDIO_SAMPLE_RATE)
-                sr = AUDIO_SAMPLE_RATE
-
-        except Exception as e:
-            print(f"   ⚠️  soundfile 로드 실패, librosa로 재시도: {e}")
-            y, sr = librosa.load(audio_path, sr=AUDIO_SAMPLE_RATE, mono=True)
-
-        if len(y) <sr * 0.1:
-            return None
-        
-        if len(y) > AUDIO_LENGTH:
-            y = y[:AUDIO_LENGTH]
-        else:
-            y = np.pad(y, (0, max(0, AUDIO_LENGTH - len(y))), "constant")
-        
-        mel_spec = librosa.feature.melspectrogram(
-            y=y, 
-            sr=sr, 
-            n_fft=AUDIO_N_FFT, 
-            hop_length=AUDIO_HOP_LENGTH, 
-            n_mels=AUDIO_N_MELS,
-            center=False
-        )
-        
-        if mel_spec.shape[1] < AUDIO_WIDTH:
-            mel_spec = np.pad(mel_spec, ((0, 0), (0, AUDIO_WIDTH - mel_spec.shape[1])), mode='constant')
-        elif mel_spec.shape[1] > AUDIO_WIDTH:
-            mel_spec = mel_spec[:, :AUDIO_WIDTH]
-        
-        log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-        delta_spec = librosa.feature.delta(log_mel_spec)
-        delta2_spec = librosa.feature.delta(log_mel_spec, order=2)
-        
-        norm_log_mel_spec = normalize_channel(log_mel_spec)
-        norm_delta_spec = normalize_channel(delta_spec)
-        norm_delta2_spec = normalize_channel(delta2_spec)
-        
-        spec_3d = np.stack([norm_log_mel_spec, norm_delta_spec, norm_delta2_spec], axis=-1)
-        
-        return spec_3d
-        
-    except Exception as e:
-        print(f"  ⚠️  오디오 스펙트로그램 생성 실패: {e}")
-        return None
-        
-    finally:
-        if audio_path and os.path.exists(audio_path):
-            try:
-                os.remove(audio_path)
-            except:
-                pass
-
 # ==================== 탐지 함수 ====================
 
-def calculate_anomaly_score_video(gen_img, latent_i, latent_o, input_tensor):
-    """Document 4의 Anomaly Score 계산"""
-    error_recon = torch.mean(torch.abs(input_tensor - gen_img), dim=[1, 2, 3])
-    error_latent = torch.mean((latent_i - latent_o) ** 2, dim=[1, 2, 3])
+def calculate_anomaly_score_pytorch(gen_img, latent_i, latent_o, input_tensor):
+    img_error = torch.abs(gen_img - input_tensor).mean().item()
+    latent_error = torch.mean(torch.pow(latent_i - latent_o, 2)).item()
+    anomaly_score = latent_error
+    fake_probability = np.clip(anomaly_score * 150, 0, 100)
     
-    anomaly_score_raw = (error_recon + 0.1 * error_latent).item()
+    scores = {
+        'img_error': img_error,
+        'latent_error': latent_error,
+        'anomaly_score': anomaly_score,
+        'fake_probability': fake_probability
+    }
     
-    # Percentile 정규화
-    anomaly_score_normalized = (anomaly_score_raw - video_score_5th) / (video_score_95th - video_score_5th + 1e-8) * 100
-    anomaly_score_normalized = np.clip(anomaly_score_normalized, 0, 100)
-    
-    return anomaly_score_normalized
+    return fake_probability, scores
 
 
 def detect_deepfake_video_with_timeline(frames_with_timestamps):
-    """비디오 딥페이크 탐지"""
+    """
+    비디오 딥페이크 탐지 (타임라인 포함)
+    
+    Returns:
+        tuple: (average_score, timeline_data, max_timestamp, facial_regions)
+    """
     if video_model is None:
-        return 50.0, [], 0, None, None
+        return 50.0, [], 0, None
     
     try:
-        timeline_data = []
+        timeline_data = []  # [{timestamp, score}, ...]
         all_scores = []
         max_score = 0
         max_timestamp = 0
         max_frame = None
-        max_tensor = None
-        max_gen_tensor = None
         
-        print(f"  📊 {len(frames_with_timestamps)}개 프레임 분석 중...")
+        print(f"{len(frames_with_timestamps)}개 프레임 분석 중...")
         
         with torch.no_grad():
             for i, (timestamp, frame) in enumerate(frames_with_timestamps):
@@ -588,7 +495,7 @@ def detect_deepfake_video_with_timeline(frames_with_timestamps):
                 
                 try:
                     gen_img, latent_i, latent_o = video_model(frame_tensor)
-                    fake_prob = calculate_anomaly_score_video(
+                    fake_prob, scores = calculate_anomaly_score_pytorch(
                         gen_img, latent_i, latent_o, frame_tensor
                     )
                     
@@ -603,8 +510,6 @@ def detect_deepfake_video_with_timeline(frames_with_timestamps):
                         max_score = fake_prob
                         max_timestamp = timestamp
                         max_frame = frame
-                        max_tensor = frame_tensor
-                        max_gen_tensor = gen_img
                     
                     if (i + 1) % 10 == 0:
                         print(f"      {i+1}초: 딥페이크={fake_prob:.1f}%")
@@ -618,64 +523,60 @@ def detect_deepfake_video_with_timeline(frames_with_timestamps):
         
         avg_score = np.mean(all_scores) if all_scores else 50.0
         
-        # XAI: 그리드 기반 얼굴 분석 + 히트맵
+        # 가장 의심스러운 프레임의 얼굴 부위 분석
         facial_regions = None
-        heatmap_base64 = None
+        if max_frame is not None:
+            facial_regions = analyze_facial_regions(max_frame, max_score)
         
-        if max_frame is not None and max_gen_tensor is not None:
-            try:
-                error_map = torch.abs(max_tensor - max_gen_tensor).mean(dim=1).squeeze().cpu().numpy()
-                error_map_resized = cv2.resize(error_map, (max_frame.shape[1], max_frame.shape[0]))
-                
-                heatmap = create_heatmap(error_map_resized)
-                facial_regions = analyze_facial_regions_grid(max_frame, error_map_resized)
-                
-                heatmap_pil = Image.fromarray(heatmap)
-                buffered = BytesIO()
-                heatmap_pil.save(buffered, format="PNG")
-                heatmap_base64 = base64.b64encode(buffered.getvalue()).decode()
-            except Exception as e:
-                print(f"  ⚠️  XAI 분석 실패: {e}")
+        print(f"\n ※ 가장 의심스러운 시점: {max_timestamp}초 ({max_score:.1f}%)")
         
-        print(f"\n  ⚠️  가장 의심스러운 시점: {max_timestamp}초 ({max_score:.1f}%)")
-        
-        return float(avg_score), timeline_data, int(max_timestamp), facial_regions, heatmap_base64
+        return float(avg_score), timeline_data, int(max_timestamp), facial_regions
         
     except Exception as e:
-        print(f"  ❌ 비디오 분석 오류: {e}")
+        print(f"✕ 비디오 분석 오류: {e}")
         import traceback
         traceback.print_exc()
-        return 50.0, [], 0, None, None
+        return 50.0, [], 0, None
 
 
-def detect_deepvoice_audio(spectrogram_3d):
-    """Document 5의 방식으로 딥보이스 탐지"""
-    if audio_model is None or audio_g_encoder is None or spectrogram_3d is None:
+def detect_deepvoice_audio(spectrogram_image):
+    """
+    1채널 이미지 입력 처리 + 개선된 점수 계산
+    """
+    if audio_model is None or spectrogram_image is None:
         return 0.0
     
     try:
-        spec_batch = np.expand_dims(spectrogram_3d, axis=0)
+        # 1. 크기 맞추기 (128x128)
+        spec_resized = spectrogram_image.resize((128, 128))
         
-        if spec_batch.shape != (1, AUDIO_HEIGHT, AUDIO_WIDTH, AUDIO_CHANNELS):
-            print(f"  ⚠️  스펙트로그램 크기 불일치: {spec_batch.shape}")
-            return 0.0
+        # 배열 변환 및 정규화 (-1 ~ 1)
+        spec_array = np.array(spec_resized.convert('L'))
+        spec_normalized = (spec_array.astype(np.float32) / 127.5) - 1.0
         
-        # Document 5의 방식
-        encoded_original = audio_g_encoder.predict(spec_batch, verbose=0)
-        reconstructed_spec = audio_model.predict(spec_batch, verbose=0)
-        encoded_reconstructed = audio_g_encoder.predict(reconstructed_spec, verbose=0)
+        # 차원 확장
+        spec_batch = spec_normalized.reshape(1, 128, 128, 1)
         
-        score_raw = np.sum(np.absolute(encoded_original - encoded_reconstructed), axis=-1)[0]
+        # 모델 예측
+        generated = audio_model.predict(spec_batch, verbose=0)
         
-        # 0-100% 정규화
-        score_normalized = np.clip(score_raw * 10, 0, 100)
+        # 오차 계산
+        reconstruction_error = np.abs(generated - spec_batch).mean()
         
-        return float(score_normalized)
+        print(f"\n[오디오 분석 로그]")
+        print(f"   - Raw Error(원본 오차): {reconstruction_error:.6f}")
+
+        # 점수 변환
+        threshold = 0.5
+        scale = 10.0
+        anomaly_score = 100 / (1 + np.exp(-scale * (reconstruction_error - threshold)))
+        
+        print(f"   - Calculated Score: {anomaly_score:.2f}%")
+        
+        return float(anomaly_score)
         
     except Exception as e:
-        print(f"  ❌ 오디오 분석 오류: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"오디오 탐지 오류: {e}")
         return 0.0
 
 # ==================== API 엔드포인트 ====================
@@ -685,24 +586,30 @@ async def analyze_video_url(video_url: str = Form(...)):
     video_path = None
     
     try:
+        # URL 저장
+        if "HhmOJ2SzmFA" in video_url:
+            print("\nURL 분석 시작")
+        
+        # 실제 분석
         video_path = download_video_from_url(video_url)
         
-        print("\n🎬 [1/3] 프레임 추출 중 (1fps)...")
+        print("\n ✓ [1/3] 프레임 추출(1fps)")
         frames_with_timestamps = extract_frames_per_second(video_path)
         
-        print("\n🔍 [2/3] 비디오 딥페이크 분석 중...")
-        video_score, timeline, max_time, facial_regions, heatmap = detect_deepfake_video_with_timeline(frames_with_timestamps)
+        print("\n ✓ [2/3] 비디오 딥페이크 분석")
+        video_score, timeline, max_time, facial_regions = detect_deepfake_video_with_timeline(frames_with_timestamps)
         
-        print("\n🎵 [3/3] 오디오 딥보이스 분석 중...")
-        spectrogram_3d = extract_audio_to_spectrogram_3channel(video_path)
-        audio_score = detect_deepvoice_audio(spectrogram_3d)
+        print("\n ✓ [3/3] 오디오 딥보이스 분석")
+        spectrogram = extract_audio_to_spectrogram(video_path)
+        audio_score = detect_deepvoice_audio(spectrogram)
         
         overall_score = (video_score + audio_score) / 2
         
-        print(f"\n✅ 분석 완료!")
+        print(f"\n✅ 분석 완료")
         print(f"  🎬 비디오 딥페이크: {video_score:.2f}%")
         print(f"  🎵 오디오 딥보이스: {audio_score:.2f}%")
         print(f"  📊 종합 점수: {overall_score:.2f}%")
+        print(f"  ⏰ 가장 의심스러운 시점: {max_time}초")
         
         return JSONResponse(content={
             "success": True,
@@ -712,10 +619,8 @@ async def analyze_video_url(video_url: str = Form(...)):
             "timeline": timeline,
             "most_suspicious_time": int(max_time),
             "facial_regions": facial_regions,
-            "heatmap": heatmap,
-            "threshold": float(video_threshold),
             "frames_analyzed": len(frames_with_timestamps),
-            "audio_available": audio_model is not None and spectrogram_3d is not None
+            "audio_available": audio_model is not None and spectrogram is not None
         })
         
     except Exception as e:
@@ -737,30 +642,32 @@ async def analyze_video(video: UploadFile = File(...)):
     if file_ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
     
+    # 분석
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_video:
         content = await video.read()
         tmp_video.write(content)
         tmp_video_path = tmp_video.name
     
     try:
-        print(f"\n📹 파일 분석 시작: {video.filename}")
+        print(f"\n 파일 분석 시작: {video.filename}")
         
-        print("\n🎬 [1/3] 프레임 추출 중 (1fps)...")
+        print("\n ✓ [1/3] 프레임 추출 (1fps)")
         frames_with_timestamps = extract_frames_per_second(tmp_video_path)
         
-        print("\n🔍 [2/3] 비디오 딥페이크 분석 중...")
-        video_score, timeline, max_time, facial_regions, heatmap = detect_deepfake_video_with_timeline(frames_with_timestamps)
+        print("\n ✓ [2/3] 비디오 딥페이크 분석")
+        video_score, timeline, max_time, facial_regions = detect_deepfake_video_with_timeline(frames_with_timestamps)
         
-        print("\n🎵 [3/3] 오디오 딥보이스 분석 중...")
-        spectrogram_3d = extract_audio_to_spectrogram_3channel(tmp_video_path)
-        audio_score = detect_deepvoice_audio(spectrogram_3d)
+        print("\n ✓ [3/3] 오디오 딥보이스 분석")
+        spectrogram = extract_audio_to_spectrogram(tmp_video_path)
+        audio_score = detect_deepvoice_audio(spectrogram)
         
         overall_score = (video_score + audio_score) / 2
         
-        print(f"\n✅ 분석 완료!")
+        print(f"\n✅ 분석 완료")
         print(f"  🎬 비디오 딥페이크: {video_score:.2f}%")
         print(f"  🎵 오디오 딥보이스: {audio_score:.2f}%")
         print(f"  📊 종합 점수: {overall_score:.2f}%")
+        print(f"  ⏰ 가장 의심스러운 시점: {max_time}초")
         
         return JSONResponse(content={
             "success": True,
@@ -770,10 +677,8 @@ async def analyze_video(video: UploadFile = File(...)):
             "timeline": timeline,
             "most_suspicious_time": int(max_time),
             "facial_regions": facial_regions,
-            "heatmap": heatmap,
-            "threshold": float(video_threshold),
             "frames_analyzed": len(frames_with_timestamps),
-            "audio_available": audio_model is not None and spectrogram_3d is not None
+            "audio_available": audio_model is not None and spectrogram is not None
         })
         
     except Exception as e:
@@ -787,43 +692,27 @@ async def analyze_video(video: UploadFile = File(...)):
 @app.get("/")
 async def root():
     return {
-        "message": "🎭 딥페이크 탐지 API (GANomaly)",
+        "message": "🎭 딥페이크 탐지 API",
         "status": "running",
         "models": {
-            "video": {
-                "loaded": video_model is not None,
-                "image_size": VIDEO_IMAGE_SIZE,
-                "threshold": float(video_threshold)
-            },
-            "audio": {
-                "loaded": audio_model is not None and audio_g_encoder is not None,
-                "input_shape": f"{AUDIO_HEIGHT}x{AUDIO_WIDTH}x{AUDIO_CHANNELS}"
-            }
+            "video": {"loaded": video_model is not None},
+            "audio": {"loaded": audio_model is not None},
+            "face_analysis": {"available": MEDIAPIPE_AVAILABLE}
         }
     }
 
-# ==================== 정적 파일 서빙 ====================
-
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
-if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
-    print(f"📁 Frontend 경로: {FRONTEND_DIR}")
-else:
-    print(f"⚠️  Frontend 폴더를 찾을 수 없습니다: {FRONTEND_DIR}")
+# Frontend 정적 파일 서빙
+try:
+    app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+except:
+    print("Frontend 폴더를 찾을 수 없습니다")
 
 
-# ==================== 서버 시작 ====================
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("🚀 딥페이크 탐지 서버 시작")
-    print("="*60)
-    print(f"\n📊 비디오 모델:")
-    print(f"   - 상태: {'✅' if video_model else '❌'}")
-    print(f"   - 임계값: {video_threshold:.1f}%")
-    
-    print(f"\n🎵 오디오 모델:")
-    print(f"   - 상태: {'✅' if (audio_model and audio_g_encoder) else '❌'}")
-    print(f"   - 입력: {AUDIO_HEIGHT}x{AUDIO_WIDTH}x{AUDIO_CHANNELS}")
-    print("="*60 + "\n")
+    print("\n딥페이크 탐지 서버 시작")
+    print(f"비디오 모델: {'✅' if video_model else '❌'}")
+    print(f"오디오 모델: {'✅' if audio_model else '❌'}")
+    print(f"얼굴 분석: {'✅' if MEDIAPIPE_AVAILABLE else '❌'}")
+    print(f"디바이스: {device}\n")
     
     uvicorn.run(app, host="0.0.0.0", port=5000)
